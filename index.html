@@ -261,12 +261,19 @@
             };
 
             const extractAndCacheFrames = async (blob, slotId) => {
-                return new Promise((resolve) => {
+                return new Promise((resolve, reject) => {
+                    // Create video element
                     const video = document.createElement('video');
+                    // IOS FIX: Must be attached to DOM to process
+                    video.style.display = 'none';
+                    document.body.appendChild(video);
+
                     video.src = URL.createObjectURL(blob);
                     video.muted = true;
-                    video.playsInline = true;
+                    video.setAttribute('playsinline', 'true'); // Critical for iOS
+                    video.setAttribute('webkit-playsinline', 'true');
                     video.preload = 'auto';
+
                     const canvas = document.createElement('canvas');
                     const ctx = canvas.getContext('2d', { willReadFrequently: true });
                     const frames = [];
@@ -285,22 +292,37 @@
                             video.currentTime = currentTime;
                         });
 
-                        while (currentTime < duration) {
-                            await seekResolve();
-                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                            const bitmap = await createImageBitmap(canvas);
-                            frames.push(bitmap);
-                            const blobPromise = new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
-                            const blobData = await blobPromise;
-                            frameBlobs.push(blobData);
-                            currentTime += step;
+                        try {
+                            while (currentTime < duration) {
+                                await seekResolve();
+                                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                                const bitmap = await createImageBitmap(canvas);
+                                frames.push(bitmap);
+                                const blobPromise = new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+                                const blobData = await blobPromise;
+                                frameBlobs.push(blobData);
+                                currentTime += step;
+                            }
+                            
+                            saveBlobToDB(FRAME_STORE, slotId, frameBlobs).then(() => {
+                                setCacheStatus(prev => ({...prev, [slotId]: 'cached'}));
+                            });
+                            
+                            // Clean up
+                            document.body.removeChild(video);
+                            resolve(frames);
+                        } catch (err) {
+                            document.body.removeChild(video);
+                            reject(err);
                         }
-                        
-                        saveBlobToDB(FRAME_STORE, slotId, frameBlobs).then(() => {
-                            setCacheStatus(prev => ({...prev, [slotId]: 'cached'}));
-                        });
-                        resolve(frames);
                     };
+
+                    video.onerror = (e) => {
+                        document.body.removeChild(video);
+                        reject(new Error("Video load failed"));
+                    };
+
+                    video.load(); // Force load for iOS
                 });
             };
 
@@ -325,7 +347,10 @@
                            }
                            return prev;
                         });
-                    } catch (e) { console.error(e); }
+                    } catch (e) { 
+                        console.error(e); 
+                        alert("Error processing video. On iPhone, ensure you upload a standard MP4.");
+                    }
                     setLoadingState(prev => ({ ...prev, [slotId]: false }));
                 }
             };
